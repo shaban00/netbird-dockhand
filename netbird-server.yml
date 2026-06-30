@@ -1,0 +1,269 @@
+x-default: &default
+  restart: unless-stopped
+  networks:
+    - netbird
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "50m"
+      max-file: "5"
+
+services:
+  netbird-postgres:
+    image: postgres:${POSTGRES_TAG:-18}
+    container_name: netbird-postgres
+    <<: *default
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-netbird}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the stack .env}
+      POSTGRES_DB: ${POSTGRES_DB:-netbird}
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - netbird-postgres:/var/lib/postgresql
+
+  netbird-dashboard:
+    image: netbirdio/dashboard:${NETBIRD_DASHBOARD_TAG:-latest}
+    container_name: netbird-dashboard
+    <<: *default
+    environment:
+      - NETBIRD_MGMT_API_ENDPOINT=https://${NETBIRD_DOMAIN:?set NETBIRD_DOMAIN in the stack .env}
+      - NETBIRD_MGMT_GRPC_API_ENDPOINT=https://${NETBIRD_DOMAIN}
+      - NETBIRD_MGMT_DISABLE_DEFAULT_POLICY=true
+      - AUTH_AUDIENCE=netbird-dashboard
+      - AUTH_CLIENT_ID=netbird-dashboard
+      - AUTH_CLIENT_SECRET=
+      - AUTH_AUTHORITY=https://${NETBIRD_DOMAIN}/oauth2
+      - USE_AUTH0=false
+      - AUTH_SUPPORTED_SCOPES=openid profile email groups
+      - AUTH_REDIRECT_URI=/nb-auth
+      - AUTH_SILENT_REDIRECT_URI=/nb-silent-auth
+      - NGINX_SSL_PORT=443
+      - LETSENCRYPT_DOMAIN=none
+      - LETSENCRYPT_EMAIL=${LETSENCRYPT_EMAIL:-}
+
+  netbird-server:
+    image: netbirdio/netbird-server:${NETBIRD_SERVER_TAG:-latest}
+    container_name: netbird-server
+    <<: *default
+    # These two are declared here ONLY so Dockhand's env-variable scanner sees them as required (it does not read the inline configs: block)
+    environment:
+      - AUTH_SECRET=${AUTH_SECRET:?required - set in stack .env (openssl rand -base64 32)}
+      - DATASTORE_ENCRYPTION_KEY=${DATASTORE_ENCRYPTION_KEY:?required - set in stack .env (openssl rand -base64 32)}
+    ports:
+      - "3478:3478/udp"
+    command: [ "--config", "/etc/netbird/config.yaml" ]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'cat /dev/null > /dev/tcp/localhost/9000' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    volumes:
+      - netbird-server:/var/lib/netbird
+    configs:
+      - source: netbird_config
+        target: /etc/netbird/config.yaml
+    depends_on:
+      netbird-postgres:
+        condition: service_healthy
+
+  netbird-crowdsec:
+    image: crowdsecurity/crowdsec:${CROWDSEC_TAG:-latest}
+    container_name: netbird-crowdsec
+    <<: *default
+    environment:
+      COLLECTIONS: crowdsecurity/linux
+    healthcheck:
+      test: [ "CMD", "cscli", "lapi", "status" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - netbird-crowdsec:/etc/crowdsec
+      - netbird-crowdsec-data:/var/lib/crowdsec/data
+
+  netbird-proxy:
+    image: netbirdio/reverse-proxy:${NETBIRD_PROXY_TAG:-latest}
+    container_name: netbird-proxy
+    <<: *default
+    # Uncomment for wireguard NetBird peer-to-peer
+    # ports:
+    #  - "51820:51820/udp"
+    environment:
+      - NB_PROXY_LOG_LEVEL=info
+      - NB_PROXY_MANAGEMENT_ADDRESS=http://netbird-server:80
+      - NB_PROXY_ALLOW_INSECURE=true
+      - NB_PROXY_DOMAIN=${NETBIRD_PROXY_DOMAIN:-${NETBIRD_DOMAIN}}
+      - NB_PROXY_ADDRESS=:8443
+      - NB_PROXY_CERTIFICATE_DIRECTORY=/certs
+      - NB_PROXY_ACME_CERTIFICATES=true
+      - NB_PROXY_ACME_CHALLENGE_TYPE=tls-alpn-01
+      - NB_PROXY_FORWARDED_PROTO=https
+      - NB_PROXY_PROXY_PROTOCOL=true
+      - NB_PROXY_PRIVATE=true
+      # Generated AFTER first deploy — see README. Leave blank until then.
+      - NB_PROXY_TOKEN=${NB_PROXY_TOKEN:-}
+      - NB_PROXY_CROWDSEC_API_URL=http://netbird-crowdsec:8080
+      - NB_PROXY_CROWDSEC_API_KEY=${NB_PROXY_CROWDSEC_API_KEY:-}
+    volumes:
+      - netbird-proxy:/certs
+    depends_on:
+      netbird-server:
+        condition: service_started
+      netbird-crowdsec:
+        condition: service_healthy
+
+  netbird-caddy:
+    image: ${CADDY_IMAGE:-shaban00/caddy:latest}
+    container_name: netbird-caddy
+    <<: *default
+    ports:
+      - "443:443"
+      - "443:443/udp"
+      - "80:80"
+    volumes:
+      - netbird-caddy-data:/data
+      - netbird-caddy-config:/config
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
+    depends_on:
+      netbird-server:
+        condition: service_healthy
+      netbird-dashboard:
+        condition: service_started
+      netbird-proxy:
+        condition: service_started
+
+configs:
+  netbird_config:
+    content: |
+      # NetBird combined server config
+      # ref: https://github.com/netbirdio/netbird/blob/main/combined/config.yaml.example
+      server:
+        exposedAddress: "https://${NETBIRD_DOMAIN}:443"
+        listenAddress: ":80"
+        metricsPort: 9090
+        healthcheckAddress: ":9000"
+        logLevel: "info"
+        logFile: "console"
+        dataDir: "/var/lib/netbird"
+        authSecret: "${AUTH_SECRET}"
+        disableAnonymousMetrics: true
+        disableGeoliteUpdate: false
+        stunPorts:
+          - 3478
+        auth:
+          issuer: "https://${NETBIRD_DOMAIN}/oauth2"
+          localAuthDisabled: false
+          signKeyRefreshEnabled: true
+          dashboardRedirectURIs:
+            - "https://${NETBIRD_DOMAIN}/nb-auth"
+            - "https://${NETBIRD_DOMAIN}/nb-silent-auth"
+          cliRedirectURIs:
+            - "http://localhost:53000/"
+        store:
+          engine: "postgres"
+          dsn: "host=${POSTGRES_HOST:-netbird-postgres} user=${POSTGRES_USER:-netbird} password=${POSTGRES_PASSWORD} dbname=${POSTGRES_DB:-netbird} port=${POSTGRES_PORT:-5432}"
+          encryptionKey: "${DATASTORE_ENCRYPTION_KEY}"
+        activityStore:
+          engine: "postgres"
+          dsn: "host=${POSTGRES_HOST:-netbird-postgres} user=${POSTGRES_USER:-netbird} password=${POSTGRES_PASSWORD} dbname=${POSTGRES_DB:-netbird} port=${POSTGRES_PORT:-5432}"
+        authStore:
+          engine: "postgres"
+          dsn: "host=${POSTGRES_HOST:-netbird-postgres} user=${POSTGRES_USER:-netbird} password=${POSTGRES_PASSWORD} dbname=${POSTGRES_DB:-netbird} port=${POSTGRES_PORT:-5432} sslmode=disable"
+        reverseProxy:
+          accessLogRetentionDays: 7
+          accessLogCleanupIntervalHours: 24
+
+  caddyfile:
+    content: |
+      {
+          admin off
+          servers {
+              listener_wrappers {
+                  layer4 {
+                      @passthrough tls sni *.${NETBIRD_DOMAIN}
+                      route @passthrough {
+                          proxy netbird-proxy:8443 {
+                              proxy_protocol v2
+                          }
+                      }
+                  }
+                  tls
+              }
+              protocols h1 h2c h2 h3
+              timeouts {
+                  read_body 0
+                  read_header 0
+                  write 0
+                  idle 0
+              }
+          }
+      }
+      (security_headers) {
+          header * {
+              Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+              X-Content-Type-Options "nosniff"
+              X-Frame-Options "SAMEORIGIN"
+              Referrer-Policy "strict-origin-when-cross-origin"
+              Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+              Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' wss: https:; frame-ancestors 'none'"
+              Cross-Origin-Embedder-Policy "require-corp"
+              Cross-Origin-Opener-Policy "same-origin"
+              Cross-Origin-Resource-Policy "same-origin"
+              -Server
+              -X-Powered-By
+              -Via
+          }
+      }
+      (compression) {
+          encode zstd gzip
+      }
+      ${NETBIRD_DOMAIN} {
+          import security_headers
+          import compression
+          # gRPC
+          reverse_proxy /signalexchange.SignalExchange/* h2c://netbird-server:80
+          reverse_proxy /management.ManagementService/* h2c://netbird-server:80
+          reverse_proxy /management.ProxyService/* h2c://netbird-server:80
+          # Backend (relay, WebSocket, API, OAuth2)
+          reverse_proxy /relay* netbird-server:80
+          reverse_proxy /ws-proxy/* netbird-server:80
+          reverse_proxy /api/* netbird-server:80
+          reverse_proxy /oauth2/* netbird-server:80
+          # Dashboard (catch-all)
+          reverse_proxy /* netbird-dashboard:80
+      }
+
+volumes:
+  netbird-postgres:
+    name: netbird-postgres
+    driver: local
+  netbird-server:
+    name: netbird-server
+    driver: local
+  netbird-crowdsec:
+    name: netbird-crowdsec
+    driver: local
+  netbird-crowdsec-data:
+    name: netbird-crowdsec-data
+    driver: local
+  netbird-proxy:
+    name: netbird-proxy
+    driver: local
+  netbird-caddy-data:
+    name: netbird-caddy-data
+    driver: local
+  netbird-caddy-config:
+    name: netbird-caddy-config
+    driver: local
+
+networks:
+  netbird:
+    name: netbird
+    driver: bridge

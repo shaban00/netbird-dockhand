@@ -1,0 +1,35 @@
+{
+  "version": "3",
+  "templates": [
+    {
+      "id": 1,
+      "type": 3,
+      "name": "netbird-server",
+      "title": "NetBird (Server)",
+      "description": "Full NetBird control plane: combined netbird-server (management + signal + relay + STUN + embedded Dex IdP), dashboard, Postgres, NetBird reverse-proxy, CrowdSec, and Caddy.",
+      "categories": ["Networking", "VPN", "Security"],
+      "platform": "linux",
+      "logo": "https://github.com/netbirdio.png",
+      "repository": {
+        "url": "https://github.com/shaban00/netbird-dockhand",
+        "stackfile": "netbird-server.yml"
+      },
+      "note": "Required .env: NETBIRD_DOMAIN, POSTGRES_PASSWORD, AUTH_SECRET, DATASTORE_ENCRYPTION_KEY."
+    },
+    {
+      "id": 2,
+      "type": 3,
+      "name": "netbird-client",
+      "title": "NetBird (Client)",
+      "description": "Join a host to your NetBird network.",
+      "categories": ["Networking", "VPN", "Security"],
+      "platform": "linux",
+      "logo": "https://github.com/netbirdio.png",
+      "repository": {
+        "url": "https://github.com/shaban00/netbird-dockhand",
+        "stackfile": "netbird-client.yml"
+      },
+      "note": "Required .env: NB_SETUP_KEY (create one in the dashboard under Settings > Setup Keys). Optional: NB_MANAGEMENT_URL (default https://api.netbird.io — set to your self-hosted server)"
+    }
+  ]
+}

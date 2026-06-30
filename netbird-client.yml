@@ -1,0 +1,30 @@
+services:
+  netbird-client:
+    image: netbirdio/netbird:${NETBIRD_CLIENT_TAG:-latest}
+    container_name: netbird-client
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+      - SYS_RESOURCE
+    devices:
+      # Needed for userspace mode / when the host WireGuard kernel module is absent
+      - /dev/net/tun
+    environment:
+      - NB_SETUP_KEY=${NB_SETUP_KEY}
+      - NB_MANAGEMENT_URL=${NB_MANAGEMENT_URL:-https://api.netbird.io:443}
+      - NB_HOSTNAME=${NB_HOSTNAME:-netbird-client}
+      - NB_LOG_LEVEL=${NB_LOG_LEVEL:-info}
+    volumes:
+      - netbird-client:/var/lib/netbird
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+volumes:
+  netbird-client:
+    name: netbird-client
+    driver: local
