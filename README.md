@@ -35,7 +35,7 @@ A **type-3 (stack) template** for Dockhand's template library that deploys the f
 5. **Redeploy** the stack so the proxy picks up both new values.
 
 ### Updating environment variables
-In Dockhand, open **Stacks → (your NetBird stack) → env**, **Add** or edit the variable, save, then **Redeploy** the stack. A plain container *restart* does not re-inject env — only a redeploy (`compose up`) applies new values.
+In Dockhand, open **Stacks → (your NetBird stack) → env**, **Add** or edit the variable, save, then **Redeploy** the stack. 
 
 ### Ports
 The server must be publicly accessible on TCP ports `80` and `443`, and UDP port `3478`
